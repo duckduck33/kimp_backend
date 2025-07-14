@@ -58,6 +58,9 @@ async def upbit_ws(coin_list):
     markets = [f"KRW-{c}" for c in coin_list]
     subscribe_fmt = [{"ticket": "test"}, {"type": "ticker", "codes": markets}]
     while True:
+
+
+
         try:
             async with websockets.connect(url) as ws:
                 await ws.send(json.dumps(subscribe_fmt))
@@ -67,6 +70,15 @@ async def upbit_ws(coin_list):
                     data = json.loads(msg)
                     coin = data["code"].replace("KRW-", "")
                     price = data["trade_price"]
+
+                    # --- 이 부분 수정 ---
+                    try:
+                        price = float(price) # 명시적으로 float으로 변환
+                    except (ValueError, TypeError):
+                        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [업비트 오류] {coin} 가격 파싱 실패: {price} (타입: {type(price)})")
+                        continue # 가격 파싱 실패 시 해당 메시지는 건너뛰고 다음 메시지 처리
+
+
                     price_dict.setdefault(coin, {})["upbit"] = price
                     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [가격] {coin} 업비트: {price} KRW") # 로그 활성화
         except Exception as e:
