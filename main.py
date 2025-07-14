@@ -5,6 +5,12 @@
 # - ws_kimp에서 1초마다 캐시된 환율과 최신 코인 시세/김프 데이터 전송
 # - 서버 시작 시 백그라운드로 WebSocket 시세 수집 및 환율 캐시 업데이트
 
+
+from dotenv import load_dotenv # 이 줄을 추가합니다.
+import os # 환경변수를 읽기 위해 os 모듈 임포트
+
+load_dotenv() # 이 줄을 추가합니다. (os 임포트 바로 아래, 다른 코드보다 먼저)
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
