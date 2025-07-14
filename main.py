@@ -4,6 +4,8 @@ import asyncio
 import websockets
 import json
 import httpx
+import time
+from contextlib import asynccontextmanager
 
 app = FastAPI()
 
@@ -17,12 +19,49 @@ app.add_middleware(
 
 price_dict = {}
 coins = [
-    "BTC", "ETH", "XRP", "LTC", "BCH",'1INCH', 'A', 'AAVE', 'ADA'
+    "BTC", "ETH", "XRP", "LTC", "BCH", "1INCH", "A", "AAVE", "ADA"
 ]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 1) 헬스체크 HTTP 엔드포인트 추가 (GET /health)
+# ─────────────────────────────────────────────────────────────────────────────
+@app.get("/health")
+async def health_check():
+    """
+    배포 환경에서 외부 환율 API 상태를 빠르게 점검하기 위한 엔드포인트
+    """
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            # 기본 환율 API 호출
+            resp = await client.get("https://open.er-api.com/v6/latest/USD")
+            resp.raise_for_status()
+            fx = resp.json()
+            rate = fx["rates"].get("KRW")
+        return {"ok": True, "rate": rate, "source": "open.er-api.com"}
+    except httpx.HTTPStatusError as e:
+        # 401 Unauthorized 등 HTTP 에러 처리
+        if e.response.status_code == 401:
+            try:
+                # 401 발생 시 대체 API로 폴백
+                async with httpx.AsyncClient(timeout=5) as client2:
+                    fallback = await client2.get(
+                        "https://api.exchangerate.host/latest?base=USD&symbols=KRW"
+                    )
+                    fallback.raise_for_status()
+                    jr = fallback.json()
+                    rate2 = jr["rates"]["KRW"]
+                return {"ok": True, "rate": rate2, "source": "exchangerate.host"}
+            except Exception as e2:
+                return {"ok": False, "error": f"Fallback failed: {e2}"}
+        return {"ok": False, "error": f"HTTP error {e.response.status_code}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
-# 업비트 실시간 시세 수신
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2) 업비트 실시간 시세 수신
+# ─────────────────────────────────────────────────────────────────────────────
 async def upbit_ws(coin_list):
     url = "wss://api.upbit.com/websocket/v1"
     markets = [f"KRW-{c}" for c in coin_list]
@@ -38,23 +77,20 @@ async def upbit_ws(coin_list):
                     data = json.loads(msg)
                     coin = data["code"].replace("KRW-", "")
                     price = data["trade_price"]
-                    # 실시간 가격 저장
-                    if coin not in price_dict:
-                        price_dict[coin] = {}
-                    price_dict[coin]["upbit"] = price
+                    price_dict.setdefault(coin, {})["upbit"] = price
                     print(f"[업비트] {coin} 가격: {price}")
         except Exception as e:
             print("[UPBIT] WebSocket 오류:", e)
             await asyncio.sleep(3)
 
-# 바이비트 실시간 시세 수신
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3) 바이비트 실시간 시세 수신
+# ─────────────────────────────────────────────────────────────────────────────
 async def bybit_ws(coin_list):
     url = "wss://stream.bybit.com/v5/public/spot"
     symbols = [f"{c.upper()}USDT" for c in coin_list]
-    subscribe_fmt = {
-        "op": "subscribe",
-        "args": [f"tickers.{sym}" for sym in symbols]
-    }
+    subscribe_fmt = {"op": "subscribe", "args": [f"tickers.{s}" for s in symbols]}
     print(f"[BYBIT] 구독: {subscribe_fmt}")
 
     while True:
@@ -81,101 +117,98 @@ async def bybit_ws(coin_list):
                     if (
                         isinstance(data, dict)
                         and "topic" in data
-                        and "data" in data
                         and isinstance(data["data"], dict)
-                        and "symbol" in data["data"]
-                        and "lastPrice" in data["data"]
                     ):
-                        ticker = data["data"]
-                        symbol = ticker["symbol"]
+                        t = data["data"]
+                        symbol = t["symbol"]
                         coin = symbol.replace("USDT", "")
-                        price = float(ticker["lastPrice"])
-                        if coin not in price_dict:
-                            price_dict[coin] = {}
-                        price_dict[coin]["bybit"] = price
+                        price = float(t["lastPrice"])
+                        price_dict.setdefault(coin, {})["bybit"] = price
                         print(f"[BYBIT] {coin} 가격: {price}")
         except Exception as e:
             print("[BYBIT] WebSocket 오류:", e)
             await asyncio.sleep(3)
 
-# 환율 비동기 조회
-import time
 
-usdkrw_cache = {
-    "rate": 1400.0,     # 초기값
-    "timestamp": 0      # 마지막 업데이트 시간(초)
-}
-
-CACHE_DURATION = 60  # 1분(60초)
+# ─────────────────────────────────────────────────────────────────────────────
+# 4) 환율 조회 함수 (401 폴백 로직 포함)
+# ─────────────────────────────────────────────────────────────────────────────
+usdkrw_cache = {"rate": 1400.0, "timestamp": 0}
+CACHE_DURATION = 60  # seconds
 
 async def get_usdkrw():
     now = time.time()
-    # 캐시가 만료됐으면 새로 조회
     if now - usdkrw_cache["timestamp"] > CACHE_DURATION:
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get("https://open.er-api.com/v6/latest/USD", timeout=3)
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get("https://open.er-api.com/v6/latest/USD")
+                resp.raise_for_status()
                 fx = resp.json()
-            rate = float(fx['rates']['KRW'])
-            print(f"[환율] 현재 원/달러 환율: {rate}")
-            # 캐시에 저장
-            usdkrw_cache["rate"] = rate
-            usdkrw_cache["timestamp"] = now
-        except Exception as e:
-            print("[환율] 조회 오류:", e)
-    else:
-        print(f"[환율] 캐시 사용: {usdkrw_cache['rate']}")
+                rate = float(fx["rates"]["KRW"])
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                # 401 시 폴백
+                async with httpx.AsyncClient(timeout=5) as client2:
+                    fb = await client2.get(
+                        "https://api.exchangerate.host/latest?base=USD&symbols=KRW"
+                    )
+                    fb.raise_for_status()
+                    rate = float(fb.json()["rates"]["KRW"])
+            else:
+                rate = usdkrw_cache["rate"]
+        except Exception:
+            rate = usdkrw_cache["rate"]
+        usdkrw_cache.update(rate=rate, timestamp=now)
     return usdkrw_cache["rate"]
 
 
-# 실시간 김프 계산 및 전송
+# ─────────────────────────────────────────────────────────────────────────────
+# 5) 실시간 김프 계산 및 전송 (웹소켓)
+# ─────────────────────────────────────────────────────────────────────────────
 @app.websocket("/ws/kimp")
 async def ws_kimp(websocket: WebSocket):
     await websocket.accept()
-    global coins  # coins 리스트를 함수 내에서 수정하기 위해 global 선언
     print("[ws_kimp] 클라이언트 연결 수락 완료")
     try:
         while True:
             await asyncio.sleep(1)
             usdkrw = await get_usdkrw()
             send_list = []
-
-            # 복사본으로 안전하게 루프
-            for coin in coins[:]:  # coins[:]는 coins 리스트 복사본
-                try:
-                    if (
-                        coin in price_dict
-                        and "upbit" in price_dict[coin]
-                        and "bybit" in price_dict[coin]
-                    ):
-                        upbit_krw = price_dict[coin]["upbit"]
-                        bybit_usdt = price_dict[coin]["bybit"]
-                        bybit_krw = bybit_usdt * usdkrw
-                        kimp = (upbit_krw / bybit_krw - 1) * 100
-                        print(kimp,"김프값!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                        send_list.append({
-                            "coin": coin,
-                            "upbit_krw": upbit_krw,
-                            "bybit_usdt": bybit_usdt,
-                            "usd_krw": usdkrw,
-                            "bybit_krw": round(bybit_krw, 2),
-                            "kimp_percent": round(kimp, 2)
-                        })
-                    else:
-                        print(f"[ws_kimp] {coin} 가격 정보 부족")
-                except Exception as e:
-                    print(f"[ws_kimp] {coin} 처리 중 에러 발생: {e}")
-                    # 에러 발생 시 coins 리스트에서 해당 코인 삭제
-                    coins.remove(coin)
-                    print(f"[ws_kimp] {coin} 리스트에서 제거됨")
-
+            for coin in coins[:]:
+                info = price_dict.get(coin, {})
+                if "upbit" in info and "bybit" in info:
+                    upkrw = info["upbit"]
+                    byusdt = info["bybit"]
+                    bykrw = byusdt * usdkrw
+                    kimp = (upkrw / bykrw - 1) * 100
+                    send_list.append({
+                        "coin": coin,
+                        "upbit_krw": upkrw,
+                        "bybit_usdt": byusdt,
+                        "usd_krw": usdkrw,
+                        "bybit_krw": round(bykrw, 2),
+                        "kimp_percent": round(kimp, 2),
+                    })
+                else:
+                    print(f"[ws_kimp] {coin} 가격 정보 부족")
             await websocket.send_text(json.dumps(send_list))
-
     except WebSocketDisconnect:
         print("[ws_kimp] 클라이언트 연결 종료")
 
-# 서버 시작 시 비동기 태스크 실행
-@app.on_event("startup")
-async def start_ws():
-    asyncio.create_task(upbit_ws(coins))
-    asyncio.create_task(bybit_ws(coins))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6) 서버 시작 시 백그라운드 태스크 실행
+#    (lifespan 이벤트 핸들러로 권장)
+# ─────────────────────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 서버 시작 시
+    t1 = asyncio.create_task(upbit_ws(coins))
+    t2 = asyncio.create_task(bybit_ws(coins))
+    yield
+    # 서버 종료 시
+    t1.cancel()
+    t2.cancel()
+
+# FastAPI 인스턴스에 lifespan 등록
+app.router.lifespan_context = lifespan  # if using FastAPI <0.95 adjust accordingly
