@@ -1,2 +1,0 @@
-fastapi는 서버에서 앱을 불러오는 방식이며 아래 명령어로 실행해야한다. 
-uvicorn main:app --reload

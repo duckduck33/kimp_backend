@@ -1,1 +1,27 @@
+# 파이썬 캐시/가상환경/IDE/테스트 결과 등 제외
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
 venv/
+.env
+*.sqlite3
+*.db
+.DS_Store
+.idea/
+.vscode/
+*.log
+*.egg-info/
+*.pytest_cache/
+# .gitignore
+bybit_ws_test.py
+common_coin_test.py
+ws_test.py
+ws_upbit.py
+guide.txt
+개선점.txt
+바이비트.py
+업비트가격.py
+# 필요 없다고 판단한 파일 모두 추가
+
