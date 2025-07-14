@@ -34,7 +34,7 @@ app.add_middleware(
 price_dict = {}
 coins = [
     "BTC", "ETH", "XRP", "LTC", "BCH",
-    "1INCH", "A", "AAVE", "ADA"
+    "1INCH", "DOGE", "AAVE", "ADA"
 ]
 
 # 환율 캐싱을 위한 전역 변수 (이제 업비트 USDT 가격이 이 역할을 대신함)
