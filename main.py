@@ -33,7 +33,7 @@ app.add_middleware(
 # 시세 저장소 및 코인리스트
 price_dict = {}
 coins = [
-    "BTC", "ETH", "XRP", "LTC", "BCH",
+    "BTC", "ETH", "XRP", "BCH",
     "1INCH", "DOGE", "AAVE", "ADA"
 ]
 
